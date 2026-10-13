@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, passwordHash TEXT NOT NULL, createdAt INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, userId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, expiresAt INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, ownerId TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, observedAddress TEXT, addressVersion INTEGER NOT NULL DEFAULT 1, title TEXT NOT NULL DEFAULT 'New chat', createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, conversationId TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, ownerId TEXT NOT NULL REFERENCES users(id), clientRequestId TEXT NOT NULL, requestHash TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('running','completed','failed','interrupted')), observedAddress TEXT, addressVersion INTEGER NOT NULL, marketScope TEXT NOT NULL, result TEXT, error TEXT, provider TEXT NOT NULL, model TEXT NOT NULL, adapterVersion TEXT NOT NULL, promptVersion TEXT NOT NULL, tokenUsage TEXT NOT NULL, quotaDate TEXT NOT NULL, reservedTokens INTEGER NOT NULL, settledTokens INTEGER, settledAt INTEGER, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, UNIQUE(conversationId,clientRequestId));
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_run ON runs(conversationId) WHERE status='running';
+CREATE INDEX IF NOT EXISTS daily_runs ON runs(quotaDate,ownerId);
+CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, conversationId TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE, runId TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('user','assistant')), text TEXT NOT NULL, textStatus TEXT NOT NULL, observedAddress TEXT, addressVersion INTEGER NOT NULL, createdAt INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS message_cursor ON messages(conversationId,createdAt,id);
+CREATE UNIQUE INDEX IF NOT EXISTS one_assistant ON messages(runId) WHERE role='assistant';
+CREATE TABLE IF NOT EXISTS tool_calls (id TEXT PRIMARY KEY, runId TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, name TEXT NOT NULL, arguments TEXT NOT NULL, version TEXT NOT NULL, status TEXT NOT NULL, result TEXT, error TEXT, assistantContent TEXT NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY);
+INSERT OR IGNORE INTO schema_migrations VALUES(1);
