@@ -14,6 +14,7 @@ import {
   type ApiError,
 } from '../contracts.js'
 import type { Config } from '../config.js'
+import { resolveMessageAddress } from '../conversation-address.js'
 export type Conversation = typeof schema.conversations.$inferSelect
 export type Run = typeof schema.runs.$inferSelect
 export type ChatMessage = typeof schema.messages.$inferSelect
@@ -211,6 +212,19 @@ export class Store {
             429,
             true,
           )
+        const observedAddress = resolveMessageAddress(
+          payload.text,
+          c.observedAddress,
+        )
+        if (observedAddress !== c.observedAddress) {
+          c.observedAddress = observedAddress
+          c.addressVersion++
+          this.sql
+            .prepare(
+              'UPDATE conversations SET observedAddress=?,addressVersion=? WHERE id=?',
+            )
+            .run(c.observedAddress, c.addressVersion, id)
+        }
         const runId = randomUUID(),
           now = Math.max(
             Date.now(),
@@ -241,7 +255,7 @@ export class Store {
             'anthropic',
             config.CLAUDE_MODEL,
             'claude-provider-v1',
-            'hyperliquid-v1',
+            'hyperliquid-v2',
             '{}',
             today,
             32000,

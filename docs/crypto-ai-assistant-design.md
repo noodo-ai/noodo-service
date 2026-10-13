@@ -2,7 +2,7 @@
 
 Design baseline: October 12, 2026. The MVP supports read-only Hyperliquid analysis. Transaction execution is a later phase; Base, multiple chains, queues, and automation are outside the current scope.
 
-The first goal is to let a user select a public Hyperliquid address and understand markets, positions, and account risk through chat: ask a question, query real data, calculate metrics, and explain the results.
+The first goal is to let a user include a public Hyperliquid address in chat and understand markets, positions, and account risk through chat: ask a question, query real data, calculate metrics, and explain the results.
 
 ## Product scope
 
@@ -17,7 +17,7 @@ Only default perpetual markets listed in metadata, such as BTC, ETH, and HYPE, a
 | Risk | Which positions need attention? | Code-calculated margin use, concentration, liquidation distance, and matching orders, explained by the model. |
 | Fills | Show recent fills. | A bounded sample with direction and fees, without claims of complete historical returns. |
 
-The user enters a public address without connecting a wallet, signing, or providing a private key. Validate `0x` followed by forty hexadecimal characters and normalize it. Save the selected address on the conversation. Changes require the explicit account selector; the model cannot silently change it. Account questions require a selection, while market queries do not. An observed address does not prove ownership; history remains private to the signed-in user.
+The user enters a public address without connecting a wallet, signing, or providing a private key. Validate `0x` followed by forty hexadecimal characters and normalize it. Resolve one distinct full address directly from each user message and save it on the conversation atomically with run acceptance. Follow-ups without an address reuse this context. Multiple distinct or malformed address candidates clear the context and require clarification in chat. The model infers intent and chooses market, account, or fill tools; it cannot query an address other than the run’s resolved address. Account questions require a resolved address, while market queries do not. An observed address does not prove ownership; history remains private to the signed-in user.
 
 Provide one chat mode, example questions, and source cards. Hide unimplemented Deep Think and Create modes. The MVP has no order placement/cancellation, leverage changes, transfers, agent authorization, automatic trading, backtesting, alerts, news retrieval, full PnL, or research reports. Explain these limits when asked to trade; never claim execution.
 
@@ -111,11 +111,11 @@ Code determines attention order: missing data or unsupported-mode notices first,
 
 ## Conversation execution and access
 
-Authenticate and check ownership, then atomically validate the account version, reserve quota, save the user message, and create a running request. Load recent context with the run's fixed address, query validated tools, calculate, explain, save the terminal result, then emit completion. Fix `observedAddress`, `addressVersion`, and `marketScope` per run; reject tools that request another address.
+Authenticate and check ownership, then atomically validate the account version, reserve quota, resolve the message address and increment its version when changed, save the user message, and create a running request. Load recent context with the run's fixed address, query validated tools, calculate, explain, save the terminal result, then emit completion. Fix `observedAddress`, `addressVersion`, and `marketScope` per run; reject tools that request another address.
 
 Allow three tool rounds, six business-tool executions, and four model calls, including a final tool-free call. Internal Info queries have their own weighted budget and share the deadline. Each model call allows 2,000 output tokens; each run allows 24,000 cumulative input and 8,000 cumulative output tokens with a 32,000-token initial reservation. Trim model context deterministically while retaining full snapshots in storage. Budget failures return saved results and explicit limits. Model generation is not automatically retried.
 
-Context includes at most twelve recent messages and 4,000 characters per message. Reject longer user input with 400 rather than silently truncating it. There is no long-term memory, summary system, or retrieval layer. Historical messages retain their address labels and are never current evidence for a newly selected account.
+Context includes at most twelve recent messages without a per-message character limit. Preserve full user input; HTTP body and model token budgets still apply. There is no long-term memory, summary system, or retrieval layer. Historical messages retain their address labels and are never current evidence for a newly selected account.
 
 Invite-only accounts use CLI-created Argon2id password hashes and hashed random session tokens. Cookies are HttpOnly, Secure in production, SameSite=Lax, with seven-day absolute expiry and immediate logout revocation. Frontend and API share an origin; writes require an allowed Origin header. Admin commands remain separate. Session-derived ownership is checked on every conversation/run access; cross-user resources return 404. Rate-limit login by IP/account and chat by user. Do not expose anonymous unlimited calls.
 
@@ -134,7 +134,7 @@ Keep model keys server-side and redact logs. External content cannot expand tool
 | `GET /v1/runs/:id` | Saved status, text, cards, and errors. |
 | `GET /health` | Process and database health. |
 
-Creation returns an initial address version of one. Address updates increment it; stale versions return 409/`addressVersionConflict`, active runs return 409/`conversationBusy`. History defaults to fifty messages, maximum one hundred, with a stable `createdAt/id` cursor.
+Creation returns an initial address version of one. Address updates, including addresses resolved from accepted messages, increment it; clients synchronize the resolved address/version from run results before sending follow-ups; stale versions return 409/`addressVersionConflict`, active runs return 409/`conversationBusy`. History defaults to fifty messages, maximum one hundred, with a stable `createdAt/id` cursor.
 
 Example message payload:
 

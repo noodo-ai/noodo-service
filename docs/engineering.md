@@ -10,6 +10,7 @@ Keep the code easy to follow before making it generic. Extract a module when it 
 - `http/` handles authentication, validation, rate limits, routes, and SSE delivery.
 - `ai/runner.ts` coordinates a bounded run. `model-context.ts` prepares model input and budgets; `run-progress.ts` persists and streams progress; `provider.ts` adapts the SDK.
 - `hyperliquid/tools.ts` validates and dispatches the three public tools. `market.ts`, `account.ts`, and `fills.ts` own their queries. `client.ts` owns transport/cache/retries, and `risk.ts` owns pure calculations.
+- `conversation-address.ts` resolves unambiguous public addresses from user messages. Acceptance persists address changes together with the new run; model intent determines which read-only tool to call.
 - `db/` owns schema, migrations, persistence, and transaction boundaries. Keep atomic acceptance and settlement together; do not split a transaction for cosmetic file-size goals.
 
 Prefer explicit parameters, domain names, and typed boundaries. Avoid generic service/repository base classes, unnecessary interfaces, catch-all utilities, and forwarding layers. Extract shared code only when multiple callers have the same requirement. Use English comments and documentation; explain why a constraint exists rather than paraphrasing the next line.

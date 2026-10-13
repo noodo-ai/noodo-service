@@ -52,7 +52,7 @@ export class Runner {
       .filter((m) => m.role === 'user' || m.textStatus === 'final')
       .map((m) => ({
         role: m.role as 'user' | 'assistant',
-        content: `[observedAddress=${m.observedAddress ?? 'none'}; version=${m.addressVersion}; ${m.runId === run.id ? 'current request' : 'historical, not current evidence'}]\n${m.text.slice(0, 4000)}`,
+        content: `[observedAddress=${m.observedAddress ?? 'none'}; version=${m.addressVersion}; ${m.runId === run.id ? 'current request' : 'historical, not current evidence'}]\n${m.text}`,
       }))
     const outputs = new Map<string, ToolOutput>()
     const system = `${SYSTEM}\nFixed observedAddress=${run.observedAddress ?? 'none'}, addressVersion=${run.addressVersion}, marketScope=${run.marketScope}. Current UTC=${new Date().toISOString()}.`

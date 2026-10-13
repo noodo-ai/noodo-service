@@ -17,7 +17,7 @@ export const addressUpdateSchema = z
 export const messageSchema = z
   .object({
     clientRequestId: z.uuid(),
-    text: z.string().trim().min(1).max(4000),
+    text: z.string().trim().min(1),
     expectedAddressVersion: z.number().int().positive(),
   })
   .strict()

@@ -196,7 +196,7 @@ it('returns SSE, persisted cards and usage; duplicate returns JSON even after ad
   expect(history.runs[0].createdAt).toBe(saved.createdAt)
   expect(history.runs[0].settledAt).toBe(saved.settledAt)
 })
-it('rejects overlong input before SSE and does not expose cross-user run', async () => {
+it('rejects empty input before SSE and does not expose cross-user run', async () => {
   const { app, store, owner, session } = await setup(),
     c = store.create(owner, null),
     headers = { cookie: session, origin }
@@ -206,7 +206,7 @@ it('rejects overlong input before SSE and does not expose cross-user run', async
     headers,
     payload: {
       clientRequestId: randomUUID(),
-      text: 'x'.repeat(4001),
+      text: '   ',
       expectedAddressVersion: 1,
     },
   })
@@ -425,7 +425,9 @@ it.each([true, false])(
     p.generate = vi.fn(async () => response([]))
     p.final = vi.fn(async (_input, onText) => {
       if (deltas) onText('Complete response')
-      return response([{ type: 'text', text: 'Complete response', citations: null }])
+      return response([
+        { type: 'text', text: 'Complete response', citations: null },
+      ])
     })
     const { store, owner, tools } = await setup(p)
     const c = store.create(owner, null)
@@ -795,4 +797,89 @@ it('times out after intermediate explanation and retains unconfirmed usage', asy
     timeout.mockRestore()
     vi.useRealTimers()
   }
+})
+
+it.each(['get_account_overview', 'get_recent_fills'] as const)(
+  'dispatches %s with the address supplied in chat without a selector',
+  async (name) => {
+    const p = provider()
+    vi.mocked(p.generate)
+      .mockResolvedValueOnce(
+        response([
+          { type: 'tool_use', id: 'account-query', name, input: { address } },
+        ]),
+      )
+      .mockResolvedValue(
+        response([{ type: 'text', text: 'Account queried.', citations: null }]),
+      )
+    const { app, store, owner, session, tools } = await setup(p)
+    const execute = vi
+      .spyOn(tools, 'execute')
+      .mockImplementation(async (_name, _input, ctx) => ({
+        data: {},
+        sources: [],
+        warnings: [],
+        coverage: {
+          marketScope: 'hyperliquid:mainnet:default-perpetuals',
+          observedAddress: ctx.address,
+          complete: true,
+          reasonCodes: [],
+        },
+      }))
+    const headers = { cookie: session, origin }
+    const c = (
+      await app.inject({
+        method: 'POST',
+        url: '/v1/conversations',
+        headers,
+        payload: {},
+      })
+    ).json()
+    const result = await app.inject({
+      method: 'POST',
+      url: `/v1/conversations/${c.id}/messages`,
+      headers,
+      payload: {
+        clientRequestId: randomUUID(),
+        text: `查看 ${address} 的${name === 'get_recent_fills' ? '最近成交' : '持仓风险'}`,
+        expectedAddressVersion: 1,
+      },
+    })
+    expect(result.statusCode).toBe(200)
+    expect(execute).toHaveBeenCalledWith(
+      name,
+      { address },
+      expect.objectContaining({ address }),
+    )
+    const run = store.run(String(result.headers['x-run-id']), owner)
+    expect(run).toMatchObject({
+      observedAddress: address,
+      addressVersion: 2,
+      status: 'completed',
+    })
+    expect(JSON.parse(run.result!).coverage[0].observedAddress).toBe(address)
+    expect(vi.mocked(p.generate).mock.calls[0][0].system).toContain(
+      `Fixed observedAddress=${address}`,
+    )
+  },
+)
+
+it('accepts and sends the full message beyond 4000 characters to the model', async () => {
+  const { app, store, owner, session, p } = await setup()
+  const conversation = store.create(owner, null)
+  const text = `${'x'.repeat(8000)} END OF FILE`
+  const result = await app.inject({
+    method: 'POST',
+    url: `/v1/conversations/${conversation.id}/messages`,
+    headers: { cookie: session, origin },
+    payload: {
+      clientRequestId: randomUUID(),
+      text,
+      expectedAddressVersion: 1,
+    },
+  })
+  expect(result.statusCode).toBe(200)
+  expect(store.history(conversation.id).messages[0]?.text).toBe(text)
+  const input = vi.mocked(p.generate).mock.calls[0]?.[0]
+  expect(input?.messages[0]?.content).toContain(text)
 })

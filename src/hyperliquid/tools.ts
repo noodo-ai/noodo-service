@@ -40,12 +40,12 @@ export class BusinessTools {
     if (!ctx.address)
       throw new ServiceError(
         'accountRequired',
-        'Select a public Hyperliquid user or subaccount address first',
+        'Include one full public Hyperliquid user or subaccount address in your message',
       )
     if ('address' in args && args.address && args.address !== ctx.address)
       throw new ServiceError(
         'addressMismatch',
-        'Tool address must match this run’s selected account',
+        'Tool address must match this run’s resolved account',
       )
     if (name === 'get_account_overview')
       return getAccount(this.client, this.supportedModes, ctx)

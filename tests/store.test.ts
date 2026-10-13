@@ -266,3 +266,61 @@ it('restores checkpoint order and settles preparing/running tools after restart'
     'Checking.',
   ])
 })
+
+it('resolves message addresses atomically and preserves the fixed run on replay', () => {
+  const { store, owner, c, p } = setup()
+  const payload = { ...p, text: `查看 ${otherAddress} 的仓位` }
+  const first = store.accept(c.id, owner, payload, config).run
+  expect(first).toMatchObject({
+    observedAddress: otherAddress,
+    addressVersion: 2,
+  })
+  expect(store.owner(c.id, owner)).toMatchObject({
+    observedAddress: otherAddress,
+    addressVersion: 2,
+  })
+  expect(store.history(c.id).messages[0]).toMatchObject({
+    observedAddress: otherAddress,
+    addressVersion: 2,
+  })
+  expect(store.accept(c.id, owner, payload, config)).toMatchObject({
+    duplicate: true,
+    run: { id: first.id, addressVersion: 2 },
+  })
+  store.finish(
+    first,
+    'completed',
+    emptyResult(),
+    { input: 0, output: 0, unconfirmed: 0 },
+    null,
+  )
+  const followup = store.accept(
+    c.id,
+    owner,
+    {
+      ...p,
+      clientRequestId: randomUUID(),
+      text: '最近的成交呢？',
+      expectedAddressVersion: 2,
+    },
+    config,
+  ).run
+  expect(followup.observedAddress).toBe(otherAddress)
+  expect(followup.addressVersion).toBe(2)
+})
+
+it('does not change the address when a new request is rejected', () => {
+  const { store, owner, c, p } = setup()
+  expect(() =>
+    store.accept(
+      c.id,
+      owner,
+      { ...p, text: `Analyze ${otherAddress}` },
+      { ...config, USER_DAILY_REQUEST_LIMIT: 0 },
+    ),
+  ).toThrow('allowance')
+  expect(store.owner(c.id, owner)).toMatchObject({
+    observedAddress: address,
+    addressVersion: 1,
+  })
+})

@@ -229,7 +229,7 @@ describe('read-only adapter', () => {
         { address: otherAddress },
         ctx(),
       ),
-    ).rejects.toThrow('selected account')
+    ).rejects.toThrow('resolved account')
   })
   it('refreshes stale account/price snapshots once, then disables cross-snapshot risk', async () => {
     const data = base()
