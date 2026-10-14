@@ -255,7 +255,7 @@ export class Store {
             'anthropic',
             config.CLAUDE_MODEL,
             'claude-provider-v1',
-            'hyperliquid-v2',
+            'hyperliquid-v4',
             '{}',
             today,
             32000,

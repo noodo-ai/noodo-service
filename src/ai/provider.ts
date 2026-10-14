@@ -137,6 +137,27 @@ export interface Provider {
     onEvent?: (event: ProviderEvent) => void,
   ): Promise<ModelResponse>
 }
+// The SDK always installs a request timer. Override that transport hook so
+// model requests are cancelled by the caller rather than by elapsed time.
+class CancellableAnthropic extends Anthropic {
+  override fetchWithTimeout(
+    url: RequestInfo,
+    init: RequestInit | undefined,
+    _ms: number,
+    controller: AbortController,
+  ): Promise<Response> {
+    const signal = init?.signal
+      ? AbortSignal.any([init.signal, controller.signal])
+      : controller.signal
+    signal.throwIfAborted()
+    return globalThis.fetch(url, {
+      ...init,
+      method: init?.method?.toUpperCase() ?? 'GET',
+      signal,
+    })
+  }
+}
+
 export class ClaudeProvider implements Provider {
   private sdk: Anthropic
   private limiter: WeightedLimiter
@@ -146,7 +167,7 @@ export class ClaudeProvider implements Provider {
     requestsPerMinute = 30,
   ) {
     this.limiter = new WeightedLimiter(requestsPerMinute, 'Claude')
-    this.sdk = new Anthropic({ apiKey: key, maxRetries: 0, timeout: 20000 })
+    this.sdk = new CancellableAnthropic({ apiKey: key, maxRetries: 0 })
   }
   private body(input: ModelInput) {
     return {
@@ -165,12 +186,7 @@ export class ClaudeProvider implements Provider {
   }
   private options(input: ModelInput) {
     return {
-      signal: AbortSignal.any([
-        input.signal,
-        AbortSignal.timeout(
-          Math.max(1, Math.min(20000, input.deadline - Date.now())),
-        ),
-      ]),
+      signal: input.signal,
       maxRetries: 0,
     }
   }

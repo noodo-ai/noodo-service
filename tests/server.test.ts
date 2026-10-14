@@ -344,7 +344,7 @@ it('fails before generation if token counting fails or budget cannot be verified
   expect(p.generate).not.toHaveBeenCalled()
 })
 
-it.each(['end_turn', 'max_tokens'] as const)(
+it.each(['end_turn'] as const)(
   'keeps the answer returned after a partial tool result (%s)',
   async (stopReason) => {
     const p = provider()
@@ -581,9 +581,9 @@ it('streams explanation, multiple prepared calls, execution and final text in or
   )
   expect(order).toEqual([
     'run.started',
+    'tool.preparing',
+    'tool.preparing',
     'message.delta',
-    'tool.preparing',
-    'tool.preparing',
     'message.round.completed',
     'tool.started',
     'execute',
@@ -740,63 +740,143 @@ it('cancels while preparing without executing, and settles pending tool status',
   ).toEqual({ status: 'failed' })
   expect(saved.settledTokens).toBe(2100)
 })
-it('times out after intermediate explanation and retains unconfirmed usage', async () => {
+it('allows model generation beyond the former request timeout', async () => {
   const p = provider()
-  p.generate = vi.fn(async (_input, emit) => {
-    emit({ type: 'text', blockIndex: 0, text: 'Still checking.' })
-    return {
-      ...response([{ type: 'text', text: 'Still checking.', citations: null }]),
-      stop_reason: 'pause_turn' as const,
-    }
+  p.generate = vi.fn(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 120000))
+    return response([
+      { type: 'text', text: 'Complete answer.', citations: null },
+    ])
   })
-  p.final = vi.fn(
-    async (input) =>
-      new Promise((_, reject) =>
-        input.signal.addEventListener(
-          'abort',
-          () => reject(input.signal.reason),
-          { once: true },
-        ),
-      ),
-  )
-  const { store, owner, tools } = await setup(p),
-    c = store.create(owner, null)
+  const { store, owner, tools } = await setup(p)
+  const c = store.create(owner, null)
   const run = store.accept(
     c.id,
     owner,
-    { clientRequestId: randomUUID(), text: 'hi', expectedAddressVersion: 1 },
+    {
+      clientRequestId: randomUUID(),
+      text: 'hi',
+      expectedAddressVersion: 1,
+    },
     config,
   ).run
-  // Node's native AbortSignal.timeout is replaced here so the run deadline can be advanced deterministically.
   vi.useFakeTimers()
-  const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
-    const controller = new AbortController()
-    setTimeout(
-      () => controller.abort(new DOMException('Timed out', 'TimeoutError')),
-      ms,
-    )
-    return controller.signal
-  })
   try {
     const executing = new Runner(store, tools, p).execute(
       run,
       new AbortController().signal,
       () => {},
     )
-    await vi.advanceTimersByTimeAsync(55000)
+    await vi.advanceTimersByTimeAsync(120000)
     await executing
-    const saved = store.run(run.id, owner)
-    expect(saved.status).toBe('failed')
-    expect(JSON.parse(saved.error!).code).toBe('requestTimeout')
-    expect(JSON.parse(saved.result!)).toMatchObject({
-      text: 'Still checking.',
-      textStatus: 'partial',
+    expect(store.run(run.id, owner).status).toBe('completed')
+    expect(JSON.parse(store.run(run.id, owner).result!)).toMatchObject({
+      text: 'Complete answer.',
+      textStatus: 'final',
     })
-    expect(JSON.parse(saved.tokenUsage).unconfirmed).toBe(2100)
   } finally {
-    timeout.mockRestore()
     vi.useRealTimers()
   }
+})
+
+it.each(['length', 'tokens', 'still-long', 'failure'] as const)(
+  'compresses final drafts before publishing (%s)',
+  async (mode) => {
+    const p = provider()
+    const draft = mode === 'tokens' ? 'Truncated draft' : '长'.repeat(1201)
+    p.generate = vi.fn(async (_input, emit) => {
+      emit({ type: 'text', text: draft, blockIndex: 0 })
+      return {
+        ...response([{ type: 'text', text: draft, citations: null }], 2000),
+        stop_reason: mode === 'tokens' ? 'max_tokens' : 'end_turn',
+      }
+    })
+    p.final = vi.fn(async (input, onText) => {
+      expect(input.tools).toBe(false)
+      expect(input.messages.at(-1)?.content).toContain(
+        'Rewrite the preceding draft',
+      )
+      const text =
+        mode === 'failure' ||
+        (mode === 'still-long' && vi.mocked(p.final).mock.calls.length === 1)
+          ? '长'.repeat(1201)
+          : '数据覆盖不完整。仅依据当前快照判断，需关注仓位集中风险。'
+      onText(text)
+      return response([{ type: 'text', text, citations: null }], 100)
+    })
+    const { store, owner, tools } = await setup(p)
+    const c = store.create(owner, null)
+    const run = store.accept(
+      c.id,
+      owner,
+      {
+        clientRequestId: randomUUID(),
+        text: '分析',
+        expectedAddressVersion: 1,
+      },
+      config,
+    ).run
+    const emit = vi.fn()
+    await new Runner(store, tools, p).execute(
+      run,
+      new AbortController().signal,
+      emit,
+    )
+    const saved = store.run(run.id, owner)
+    expect(saved.status).toBe(mode === 'failure' ? 'failed' : 'completed')
+    expect(p.final).toHaveBeenCalledTimes(
+      ['failure', 'still-long'].includes(mode) ? 2 : 1,
+    )
+    const result = JSON.parse(saved.result!)
+    const published = emit.mock.calls
+      .filter(([event]) => event === 'message.delta')
+      .map(([, data]) => data.text)
+      .join('')
+    expect(published).not.toContain(draft)
+    expect(result.text).toBe(published)
+    if (mode === 'failure') {
+      expect(result.text).toBe('')
+      expect(JSON.parse(saved.error!).code).toBe('incompleteModelResponse')
+    } else {
+      expect(result.textStatus).toBe('final')
+      expect(result.text).toContain('数据覆盖不完整')
+      expect(
+        result.activity.filter((a: { type: string }) => a.type === 'text'),
+      ).toHaveLength(1)
+    }
+    expect(JSON.parse(saved.tokenUsage).output).toBe(
+      2000 + vi.mocked(p.final).mock.calls.length * 100,
+    )
+    expect(JSON.parse(saved.tokenUsage).unconfirmed).toBe(0)
+  },
+)
+
+it('counts supplementary Unicode characters once at the reply boundary', async () => {
+  const p = provider()
+  const text = '𠮷'.repeat(1200)
+  p.generate = vi.fn(async () =>
+    response([{ type: 'text', text, citations: null }]),
+  )
+  const { store, owner, tools } = await setup(p)
+  const c = store.create(owner, null)
+  const run = store.accept(
+    c.id,
+    owner,
+    {
+      clientRequestId: randomUUID(),
+      text: 'hi',
+      expectedAddressVersion: 1,
+    },
+    config,
+  ).run
+  await new Runner(store, tools, p).execute(
+    run,
+    new AbortController().signal,
+    () => {},
+  )
+  expect(store.run(run.id, owner).status).toBe('completed')
+  expect(JSON.parse(store.run(run.id, owner).result!).text).toBe(text)
+  expect(p.final).not.toHaveBeenCalled()
 })
 
 it.each(['get_account_overview', 'get_recent_fills'] as const)(

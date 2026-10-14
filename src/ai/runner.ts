@@ -1,4 +1,11 @@
-import { SYSTEM, compact, prepareModelInput } from './model-context.js'
+import {
+  SYSTEM,
+  MAX_REPLY_CHARACTERS,
+  TARGET_REPLY_CHARACTERS,
+  replyLength,
+  compact,
+  prepareModelInput,
+} from './model-context.js'
 import { createRunProgress, type Emit } from './run-progress.js'
 import { type Store, type Run, type Usage } from '../db/store.js'
 import {
@@ -14,6 +21,7 @@ import {
   type Provider,
   type MessageParam,
   type Message,
+  type ModelResponse,
   type ToolResultBlockParam,
   type ProviderEvent,
 } from './provider.js'
@@ -29,9 +37,8 @@ export class Runner {
   ) {}
   async execute(run: Run, signal: AbortSignal, emit: Emit): Promise<void> {
     const start = Date.now(),
-      deadline = start + 55000,
-      timeout = AbortSignal.timeout(55000),
-      combined = AbortSignal.any([signal, timeout])
+      deadline = Infinity,
+      combined = signal
     const result = emptyResult(),
       usage: Usage = { input: 0, output: 0, unconfirmed: 0 }
     this.store.sql
@@ -65,7 +72,10 @@ export class Runner {
       checkpoint,
     )
     let nextRound = 0
-    const invoke = async (tools: boolean) => {
+    const invoke = async (
+      tools: boolean,
+      compressionAttempt = 0,
+    ): Promise<{ response: ModelResponse; round: number }> => {
       const { input, count } = await prepareModelInput(
           this.provider,
           messages,
@@ -79,40 +89,51 @@ export class Runner {
         reserved = count + input.maxTokens
       const round = nextRound++
       let streamed = ''
+      const textId = `text:${round}:0`
       const onEvent = (event: ProviderEvent) => {
         combined.throwIfAborted()
         if (event.type === 'tool.preparing')
           prepareTool(round, event.id, event.name)
-        else {
-          // Round separators are persisted and streamed exactly once.
-          if (!streamed && event.text && result.text)
-            appendText('\n\n', round, event.blockIndex, true)
+        else if (event.text) {
+          // Reserve activity order while withholding unchecked answer drafts.
+          if (!streamed)
+            result.activity!.push({
+              type: 'text',
+              id: textId,
+              round,
+              phase: 'pending',
+              text: '',
+            })
           streamed += event.text
-          appendText(event.text, round, event.blockIndex)
         }
       }
       usage.unconfirmed += reserved
       checkpoint()
-      const response = tools
-        ? await this.provider.generate(input, onEvent)
-        : await this.provider.final(
-            input,
-            (text) => onEvent({ type: 'text', blockIndex: 0, text }),
-            onEvent,
-          )
-      combined.throwIfAborted()
-      // Retain complete-response fallback for adapters that emitted no deltas.
+      let response: ModelResponse
+      try {
+        response = tools
+          ? await this.provider.generate(input, onEvent)
+          : await this.provider.final(
+              input,
+              (text) => onEvent({ type: 'text', blockIndex: 0, text }),
+              onEvent,
+            )
+        combined.throwIfAborted()
+      } catch (error) {
+        // Preserve interrupted evidence without treating it as a complete answer.
+        const item = result.activity!.find((a) => a.id === textId)
+        if (item?.type === 'text') item.text = streamed
+        if (streamed) result.text += `${result.text ? '\n\n' : ''}${streamed}`
+        throw error
+      }
       const text = responseText(response)
-      if (!streamed && text) onEvent({ type: 'text', blockIndex: 0, text })
+      const hasTools = response.content.some((b) => b.type === 'tool_use')
       const phase =
         tools &&
-        (response.content.some((b) => b.type === 'tool_use') ||
+        (hasTools ||
           !['end_turn', 'max_tokens'].includes(response.stop_reason ?? ''))
           ? 'explanation'
           : 'final'
-      for (const item of result.activity!)
-        if (item.type === 'text' && item.round === round) item.phase = phase
-      emit('message.round.completed', { round, phase })
       modelResponses.push({
         stage: tools ? 'generate' : 'final',
         stopReason: response.stop_reason,
@@ -124,6 +145,37 @@ export class Runner {
       usage.input += response.usage.input_tokens
       usage.output += response.usage.output_tokens
       this.store.checkpoint(run.id, result, usage, response.model)
+      if (
+        !hasTools &&
+        (response.stop_reason === 'max_tokens' ||
+          replyLength(text) > MAX_REPLY_CHARACTERS)
+      ) {
+        result.activity = result.activity!.filter((a) => a.id !== textId)
+        checkpoint()
+        if (compressionAttempt >= 2)
+          throw new ServiceError(
+            'incompleteModelResponse',
+            'Model could not produce a complete answer within the character limit',
+            502,
+            true,
+          )
+        messages.push(
+          { role: 'assistant', content: response.content },
+          {
+            role: 'user',
+            content: `Rewrite the preceding draft as a complete, self-contained final answer, not a continuation. It ${response.stop_reason === 'max_tokens' ? 'was cut off by the token limit' : `exceeded ${MAX_REPLY_CHARACTERS} characters`}. Use at most ${compressionAttempt ? 600 : TARGET_REPLY_CHARACTERS} Unicode characters including whitespace and Markdown. Preserve essential sourced figures, material risks, coverage and missing-data caveats. Remove secondary detail and repetition. End with complete sentences. Use only the existing evidence; do not call tools or invent data.`,
+          },
+        )
+        return invoke(false, compressionAttempt + 1)
+      }
+      if (text) {
+        if (result.text) appendText('\n\n', round, 0, true)
+        appendText(text, round, 0)
+      }
+      for (const item of result.activity!)
+        if (item.type === 'text' && item.round === round) item.phase = phase
+      emit('message.round.completed', { round, phase })
+      checkpoint()
       return { response, round }
     }
     emit('run.started', {
@@ -331,14 +383,7 @@ export class Runner {
             499,
             true,
           )
-        : timeout.aborted
-          ? new ServiceError(
-              'requestTimeout',
-              'Request exceeded its time budget',
-              504,
-              true,
-            )
-          : publicError(e)
+        : publicError(e)
       result.textStatus = result.text ? 'partial' : 'unavailable'
       if (
         this.store.finish(

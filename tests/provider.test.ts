@@ -221,3 +221,56 @@ it.each(['error', 'cancel'] as const)(
     expect(texts).toEqual(['Intermediate'])
   },
 )
+
+it('keeps token counting pending beyond SDK defaults and supports caller cancellation', async () => {
+  vi.useFakeTimers()
+  try {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async (_url, init: RequestInit) =>
+          new Promise<Response>((resolve, reject) => {
+            const timer = setTimeout(
+              () =>
+                resolve(
+                  new Response(JSON.stringify({ input_tokens: 10 }), {
+                    headers: { 'content-type': 'application/json' },
+                  }),
+                ),
+              700000,
+            )
+            init.signal?.addEventListener(
+              'abort',
+              () => {
+                clearTimeout(timer)
+                reject(init.signal?.reason)
+              },
+              { once: true },
+            )
+          }),
+      ),
+    )
+    const p = new ClaudeProvider('test', 'test-only')
+    const abort = new AbortController()
+    const input = {
+      messages: [],
+      system: '',
+      signal: abort.signal,
+      deadline: Infinity,
+      maxTokens: 2000,
+      tools: false,
+    }
+    const pending = p.count(input)
+    await vi.advanceTimersByTimeAsync(700000)
+    expect(await pending).toBe(10)
+    const cancelled = p.count(input)
+    const assertion = expect(cancelled).rejects.toMatchObject({
+      code: 'modelUnavailable',
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    abort.abort()
+    await assertion
+  } finally {
+    vi.useRealTimers()
+  }
+})
