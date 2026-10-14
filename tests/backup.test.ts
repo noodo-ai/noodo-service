@@ -76,3 +76,106 @@ it('backs up an active WAL database, verifies encrypted independent restore, and
     store.close()
   }
 })
+
+it.each([
+  'deleted',
+  'missing-result',
+  'invalid-tokens',
+  'missing-settlement',
+] as const)(
+  'verifies completed run backups with %s records',
+  async (scenario) => {
+    const dir = mkdtempSync(join(tmpdir(), 'noodo-backup-test-'))
+    paths.push(dir)
+    const store = new Store(join(dir, 'live.sqlite'))
+    const owner = randomUUID()
+    try {
+      store.sql
+        .prepare('INSERT INTO users VALUES(?,?,?,?)')
+        .run(owner, owner, 'hash', Date.now())
+      const config = loadConfig({
+        ANTHROPIC_API_KEY: 'test',
+        ALLOWED_ORIGINS: 'http://localhost:5173',
+        NODE_ENV: 'development',
+        COOKIE_SECURE: 'false',
+      })
+      const conversation = store.create(owner, null)
+      const run = store.accept(
+        conversation.id,
+        owner,
+        {
+          clientRequestId: randomUUID(),
+          text: 'private fixture text',
+          expectedAddressVersion: 1,
+        },
+        config,
+      ).run
+      store.finish(
+        run,
+        'completed',
+        {
+          ...emptyResult(),
+          text: 'private answer',
+          textStatus: 'final',
+        },
+        { input: 5, output: 1, unconfirmed: 0 },
+        null,
+      )
+      if (scenario === 'missing-result') {
+        store.sql.prepare('UPDATE runs SET result=NULL WHERE id=?').run(run.id)
+      } else {
+        store.deleteConversation(conversation.id, owner)
+        if (scenario === 'invalid-tokens')
+          store.sql
+            .prepare(
+              'UPDATE runs SET settledTokens=reservedTokens+1 WHERE id=?',
+            )
+            .run(run.id)
+        if (scenario === 'missing-settlement')
+          store.sql
+            .prepare('UPDATE runs SET settledAt=NULL WHERE id=?')
+            .run(run.id)
+      }
+
+      const before = store.sql
+        .prepare('SELECT * FROM runs WHERE id=?')
+        .get(run.id)
+      const out = join(dir, 'noodo-test.enc')
+      const env = {
+        ...process.env,
+        DATABASE_PATH: join(dir, 'live.sqlite'),
+        BACKUP_ENCRYPTION_KEY: randomBytes(32).toString('hex'),
+      }
+      await exec(
+        process.execPath,
+        ['--import', 'tsx', 'src/cli.ts', 'backup', out],
+        { env },
+      )
+      const verification = exec(
+        process.execPath,
+        ['--import', 'tsx', 'src/cli.ts', 'verify', out],
+        { env },
+      )
+      if (scenario === 'deleted') {
+        const result = await verification
+        expect(JSON.parse(result.stdout)).toMatchObject({
+          verified: true,
+          recoveredRunningRuns: 0,
+          restoredToIndependentDatabase: true,
+        })
+      } else {
+        await expect(verification).rejects.toMatchObject({
+          code: 1,
+          stderr: expect.stringContaining(
+            'Backup quota or terminal-state verification failed',
+          ),
+        })
+      }
+      expect(
+        store.sql.prepare('SELECT * FROM runs WHERE id=?').get(run.id),
+      ).toEqual(before)
+    } finally {
+      store.close()
+    }
+  },
+)

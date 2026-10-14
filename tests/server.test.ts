@@ -963,3 +963,99 @@ it('accepts and sends the full message beyond 4000 characters to the model', asy
   const input = vi.mocked(p.generate).mock.calls[0]?.[0]
   expect(input?.messages[0]?.content).toContain(text)
 })
+
+it('deletes only owned idle conversations and preserves quota accounting', async () => {
+  const { app, store, owner, session } = await setup()
+  const c = store.create(owner, null)
+  const other = randomUUID()
+  store.sql
+    .prepare('INSERT INTO users VALUES(?,?,?,?)')
+    .run(other, other, 'test', Date.now())
+  const foreign = store.create(other, null)
+  const headers = { cookie: session, origin }
+  expect(
+    (
+      await app.inject({
+        method: 'DELETE',
+        url: `/v1/conversations/${foreign.id}`,
+        headers,
+      })
+    ).statusCode,
+  ).toBe(404)
+  expect(
+    (
+      await app.inject({
+        method: 'DELETE',
+        url: `/v1/conversations/${c.id}`,
+        headers: { cookie: session },
+      })
+    ).statusCode,
+  ).toBe(403)
+  const accepted = store.accept(
+    c.id,
+    owner,
+    {
+      clientRequestId: randomUUID(),
+      text: 'private content',
+      expectedAddressVersion: 1,
+    },
+    config,
+  )
+  expect(
+    (
+      await app.inject({
+        method: 'DELETE',
+        url: `/v1/conversations/${c.id}`,
+        headers,
+      })
+    ).statusCode,
+  ).toBe(409)
+  store.finish(
+    accepted.run,
+    'completed',
+    {
+      text: 'private answer',
+      textStatus: 'final',
+      dataCards: [],
+      sources: [],
+      coverage: [],
+      warnings: [],
+    },
+    { input: 100, output: 10, unconfirmed: 0 },
+    null,
+  )
+  const deletion = await app.inject({
+    payload: {},
+    method: 'DELETE',
+    url: `/v1/conversations/${c.id}`,
+    headers,
+  })
+  expect(deletion.statusCode).toBe(200)
+  expect(deletion.json()).toEqual({ deleted: true })
+  expect(
+    (await app.inject({ url: `/v1/conversations/${c.id}`, headers }))
+      .statusCode,
+  ).toBe(404)
+  expect(
+    (await app.inject({ url: `/v1/runs/${accepted.run.id}`, headers }))
+      .statusCode,
+  ).toBe(404)
+  expect(
+    (await app.inject({ url: '/v1/conversations', headers })).json()
+      .conversations,
+  ).toEqual([])
+  expect(
+    store.sql
+      .prepare('SELECT * FROM messages WHERE conversationId=?')
+      .all(c.id),
+  ).toEqual([])
+  const retained = store.sql
+    .prepare('SELECT result,observedAddress,settledTokens FROM runs WHERE id=?')
+    .get(accepted.run.id)
+  expect(retained).toEqual({
+    result: null,
+    observedAddress: null,
+    settledTokens: 110,
+  })
+  expect(() => store.owner(foreign.id, other)).not.toThrow()
+})

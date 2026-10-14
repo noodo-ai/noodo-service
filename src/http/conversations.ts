@@ -25,10 +25,17 @@ export function registerConversationRoutes(
   app.get('/v1/conversations', async (req) => ({
     conversations: store.sql
       .prepare(
-        'SELECT * FROM conversations WHERE ownerId=? ORDER BY updatedAt DESC,id DESC LIMIT 100',
+        'SELECT * FROM conversations WHERE ownerId=? AND deletedAt IS NULL ORDER BY updatedAt DESC,id DESC LIMIT 100',
       )
       .all(req.userId),
   }))
+  app.delete<{ Params: { id: string } }>(
+    '/v1/conversations/:id',
+    async (req) => {
+      store.deleteConversation(req.params.id, req.userId)
+      return { deleted: true }
+    },
+  )
   app.get<{ Params: { id: string } }>('/v1/conversations/:id', async (req) => {
     const conversation = store.owner(req.params.id, req.userId)
     const query = z

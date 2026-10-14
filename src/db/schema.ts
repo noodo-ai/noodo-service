@@ -13,6 +13,7 @@ export const sessions = sqliteTable('sessions', {
   expiresAt: integer().notNull(),
 })
 export const conversations = sqliteTable('conversations', {
+  deletedAt: integer(),
   id: text().primaryKey(),
   ownerId: text()
     .notNull()

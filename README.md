@@ -67,6 +67,8 @@ Risk calculations use decimal arithmetic, source IDs, and formula versions. They
 
 Browser authentication uses an HttpOnly cookie. Every conversation and run is owner-scoped; another user's resource returns 404. Request schemas and public errors live in `src/contracts.ts`.
 
+Owner-scoped `DELETE /v1/conversations/:id` returns `{deleted:true}`. Active runs return 409. Deletion atomically clears messages, tool snapshots, saved results, errors, and addresses and hides the conversation and its runs (404). Redacted run accounting remains until normal retention expires so deletion cannot reset daily quotas. Existing encrypted backups retain their usual seven-day lifetime.
+
 A new `POST /v1/conversations/:id/messages` returns SSE and `X-Run-Id`. The same `clientRequestId` and payload return JSON `{runId,status,resultUrl}`; a changed payload returns 409. Duplicate lookup precedes new-request version, quota, and concurrency checks, so an old request remains recoverable after an account change. Each conversation allows one running request; the service allows ten globally.
 
 The frontend saves the original request before POST and handles SSE or JSON according to Content-Type. A disconnect retrieves `GET /v1/runs/:id`; uncertain submissions retain the original ID. Only explicit retries use new IDs. Requests older than thirty days are not replayed. Saved run results are authoritative for text and cards. There is no event replay or background continuation.

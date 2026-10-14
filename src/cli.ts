@@ -64,9 +64,15 @@ try {
       .prepare("SELECT COUNT(*) AS n FROM runs WHERE status='running'")
       .get() as { n: number }
     store.recover()
+    // Deleted conversations retain quota accounting but intentionally erase results.
     const invalid = store.sql
       .prepare(
-        "SELECT COUNT(*) AS n FROM runs WHERE status='running' OR settledTokens IS NULL OR settledAt IS NULL OR settledTokens<0 OR settledTokens>reservedTokens OR (status='completed' AND result IS NULL)",
+        `SELECT COUNT(*) AS n
+         FROM runs JOIN conversations ON conversations.id=runs.conversationId
+         WHERE runs.status='running' OR runs.settledTokens IS NULL
+           OR runs.settledAt IS NULL OR runs.settledTokens<0
+           OR runs.settledTokens>runs.reservedTokens
+           OR (runs.status='completed' AND runs.result IS NULL AND conversations.deletedAt IS NULL)`,
       )
       .get() as { n: number }
     if (invalid.n)

@@ -57,6 +57,20 @@ export class Store {
           ),
         ),
       )()
+    if (
+      !this.sql.prepare('SELECT 1 FROM schema_migrations WHERE version=3').get()
+    )
+      this.sql.transaction(() =>
+        this.sql.exec(
+          readFileSync(
+            new URL(
+              '../../migrations/0003_conversation_deletion.sql',
+              import.meta.url,
+            ),
+            'utf8',
+          ),
+        ),
+      )()
     this.db = drizzle(this.sql, { schema })
   }
   user(username: string) {
@@ -68,14 +82,18 @@ export class Store {
   }
   owner(id: string, ownerId: string): Conversation {
     const c = this.sql
-      .prepare('SELECT * FROM conversations WHERE id=? AND ownerId=?')
+      .prepare(
+        'SELECT * FROM conversations WHERE id=? AND ownerId=? AND deletedAt IS NULL',
+      )
       .get(id, ownerId) as Conversation | undefined
     if (!c) throw new ServiceError('notFound', 'Conversation not found', 404)
     return c
   }
   run(id: string, ownerId: string): Run {
     const run = this.sql
-      .prepare('SELECT * FROM runs WHERE id=? AND ownerId=?')
+      .prepare(
+        'SELECT runs.* FROM runs JOIN conversations ON conversations.id=runs.conversationId WHERE runs.id=? AND runs.ownerId=? AND conversations.deletedAt IS NULL',
+      )
       .get(id, ownerId) as Run | undefined
     if (!run) throw new ServiceError('notFound', 'Run not found', 404)
     return run
@@ -84,9 +102,48 @@ export class Store {
     const id = randomUUID(),
       now = Date.now()
     this.sql
-      .prepare('INSERT INTO conversations VALUES(?,?,?,1,?,?,?)')
+      .prepare(
+        'INSERT INTO conversations(id,ownerId,observedAddress,addressVersion,title,createdAt,updatedAt) VALUES(?,?,?,1,?,?,?)',
+      )
       .run(id, ownerId, observedAddress, 'New chat', now, now)
     return this.owner(id, ownerId)
+  }
+  deleteConversation(id: string, ownerId: string): void {
+    this.sql
+      .transaction(() => {
+        this.owner(id, ownerId)
+        if (
+          this.sql
+            .prepare(
+              "SELECT 1 FROM runs WHERE conversationId=? AND status='running'",
+            )
+            .get(id)
+        )
+          throw new ServiceError(
+            'conversationBusy',
+            'Wait for the active run before deleting this chat',
+            409,
+            true,
+          )
+        this.sql.prepare('DELETE FROM messages WHERE conversationId=?').run(id)
+        this.sql
+          .prepare(
+            'DELETE FROM tool_calls WHERE runId IN (SELECT id FROM runs WHERE conversationId=?)',
+          )
+          .run(id)
+        // Keep settled accounting until normal retention expires so deletion cannot reset quotas.
+        this.sql
+          .prepare(
+            'UPDATE runs SET result=NULL,error=NULL,observedAddress=NULL WHERE conversationId=?',
+          )
+          .run(id)
+        this.sql
+          .prepare(
+            "UPDATE conversations SET deletedAt=?,title='Deleted chat',observedAddress=NULL WHERE id=?",
+          )
+          .run(Date.now(), id)
+      })
+      .immediate()
   }
   updateAddress(
     id: string,
