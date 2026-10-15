@@ -11,6 +11,8 @@ Keep the code easy to follow before making it generic. Extract a module when it 
 - `ai/runner.ts` coordinates a run bounded by tool and token budgets. `model-context.ts` prepares model input, budgets, and reply character limits; `run-progress.ts` persists and streams progress; `provider.ts` adapts the SDK. Buffer answer drafts until validated, and compress oversized or token-truncated final answers with tool-free calls before publishing. Model calls and runs have no elapsed-time cutoff; retain caller cancellation and upstream query timeouts.
 - `hyperliquid/tools.ts` validates and dispatches the three public tools. `market.ts`, `account.ts`, and `fills.ts` own their queries. `client.ts` owns transport/cache/retries, and `risk.ts` owns pure calculations.
 - `conversation-address.ts` resolves unambiguous public addresses from user messages. Acceptance persists address changes together with the new run; model intent determines which read-only tool to call.
+- `resources/contracts.ts` owns resource input limits, supported formats, and validation; `http/resources.ts` owns authenticated resource/category/file routes; `db/resources.ts` owns resource queries and transactional quota checks. Resource attachments remain SQLite BLOBs so the existing encrypted backup covers their lifecycle. Community reads public personal resources; it does not copy them.
+- `trends/` owns bounded scheduled snapshots, deterministic signal rules, and collector lifecycle; `http/trends.ts` returns authenticated stored reads. Share the existing InfoClient weighted budget with chat, keep the public stats transport isolated, and expose partial failures, warm-up, scope, and observation times. `db/trends.ts` owns loading, validation, and persistence of bounded state in SQLite via migration 0005. Trends never calls the model or claims sampled changes are complete trades.
 - `db/` owns schema, migrations, persistence, and transaction boundaries. Keep atomic acceptance and settlement together; do not split a transaction for cosmetic file-size goals.
 
 Prefer explicit parameters, domain names, and typed boundaries. Avoid generic service/repository base classes, unnecessary interfaces, catch-all utilities, and forwarding layers. Extract shared code only when multiple callers have the same requirement. Use English comments and documentation; explain why a constraint exists rather than paraphrasing the next line.
@@ -22,6 +24,10 @@ Validate unknown input at HTTP, provider, upstream, and persistence boundaries. 
 Preserve request IDs and transaction boundaries when refactoring. Never await network work inside SQLite write transactions. Finalization must remain conditional and idempotent. Propagate cancellation and clean up timers/listeners. Return known public errors without exposing secrets or provider payloads.
 
 Use the repository's Node 22 wrapper for lint, typecheck, tests, and build so validation uses the same native dependencies as runtime. Run all four checks before handing off changes. Add regression tests for bugs and meaningful tests for extracted behavior; avoid tests that only repeat implementation details.
+
+## Resource permissions
+
+Public resource access still requires a session. Check current visibility before returning resource bodies or file bytes; owner-only mutations and private access return 404 to other users. Never expose another user's personal category IDs. Keep quota checks, body changes, and attachment insertion atomic. Resource data has an explicit owner-managed lifetime, independent of chat retention. Avoid storing resource bodies, base64 content, or filenames in logs. Resource previews use validated MIME types, no-store responses, and download disposition by default.
 
 ## Formatting and review
 

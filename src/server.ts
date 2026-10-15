@@ -1,5 +1,8 @@
+import { TrendsCollector } from './trends/collector.js'
+import { registerTrendRoutes } from './http/trends.js'
 import { registerAuthRoutes, tokenHash } from './http/auth.js'
 import { registerConversationRoutes } from './http/conversations.js'
+import { registerResourceRoutes } from './http/resources.js'
 import { RateLimits } from './http/rate-limits.js'
 import Fastify, { LogController } from 'fastify'
 import cookie from '@fastify/cookie'
@@ -38,11 +41,13 @@ export async function createServer(
   })
   const store = dependencies.store ?? new Store(config.DATABASE_PATH)
   store.recover()
+  const info = new InfoClient(config.HYPERLIQUID_WEIGHT_PER_MINUTE)
+  const trends = new TrendsCollector(store, info)
   const runner = new Runner(
     store,
     dependencies.tools ??
       new BusinessTools(
-        new InfoClient(config.HYPERLIQUID_WEIGHT_PER_MINUTE),
+        info,
         config.SUPPORTED_ACCOUNT_MODES ? ['disabled'] : [],
       ),
     dependencies.provider ??
@@ -100,6 +105,24 @@ export async function createServer(
   })
   await registerAuthRoutes(app, store, config, limits)
   registerConversationRoutes(app, store, config, limits, runner, active)
+  registerResourceRoutes(app, store, limits)
+  registerTrendRoutes(app, trends)
+  let trendTimer: ReturnType<typeof setInterval> | undefined
+  app.addHook('onListen', async () => {
+    const collect = () => {
+      void trends
+        .refresh()
+        .catch(() =>
+          app.log.warn(
+            { code: 'trendsCollectionFailed' },
+            'Trends collection failed',
+          ),
+        )
+    }
+    collect()
+    trendTimer = setInterval(collect, 60_000)
+    trendTimer.unref()
+  })
   const prune = setInterval(() => {
     try {
       store.prune()
@@ -109,6 +132,8 @@ export async function createServer(
   }, 3600000)
   prune.unref()
   app.addHook('preClose', async () => {
+    clearInterval(trendTimer)
+    await trends.stop()
     for (const c of active) c.abort()
   })
   app.addHook('onClose', async () => {

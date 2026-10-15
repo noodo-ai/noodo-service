@@ -19,7 +19,13 @@ Only default perpetual markets listed in metadata, such as BTC, ETH, and HYPE, a
 
 The user enters a public address without connecting a wallet, signing, or providing a private key. Validate `0x` followed by forty hexadecimal characters and normalize it. Resolve one distinct full address directly from each user message and save it on the conversation atomically with run acceptance. Follow-ups without an address reuse this context. Multiple distinct or malformed address candidates clear the context and require clarification in chat. The model infers intent and chooses market, account, or fill tools; it cannot query an address other than the run’s resolved address. Account questions require a resolved address, while market queries do not. An observed address does not prove ownership; history remains private to the signed-in user.
 
-Provide one chat mode, example questions, and source cards. Hide unimplemented Deep Think and Create modes. The MVP has no order placement/cancellation, leverage changes, transfers, agent authorization, automatic trading, backtesting, alerts, news retrieval, full PnL, or research reports. Explain these limits when asked to trade; never claim execution.
+Provide one chat mode, example questions, and source cards. Hide unimplemented Deep Think and Create modes. The MVP has no order placement/cancellation, leverage changes, transfers, agent authorization, automatic trading, backtesting, alerts, news retrieval, full PnL, or autonomous research report generation. Explain these limits when asked to trade; never claim execution.
+
+### Resource library
+
+The workspace also stores user-supplied AI reports and datasets in a lightweight resource library. Personal owns the original resource, its category, visibility, and attachments; Community lists public originals for authenticated users. New resources default to private. Owners can edit, publish, unpublish, and delete their resources and manage personal categories. Search covers title/summary with topic and file-format filters; popular discovery counts independent readers within seven days. Resource access is independent of conversations and never submits a model request.
+
+Store resource metadata and attachment BLOBs in the existing SQLite database with atomic owner quotas (10 MiB per resource, 100 MiB and 1,000 resources per user). Support Markdown, TXT, CSV, JSON, PDF, PNG, JPG/JPEG, and WebP without OCR, office conversion, or AI indexing. Every body/file request checks current visibility; mutations and categories are owner-only. Resource lifetime is controlled by the owner, independent of chat retention, and encrypted database backups cover attachments. See the [README](../README.md#resources-api-and-storage) for the HTTP contract and limits.
 
 ## Architecture
 
@@ -185,3 +191,7 @@ Retain chats, runs, and snapshots for thirty days. Explicit conversation deletio
 NOFX is a reference for Hyperliquid queries, field differences, order status, and authorization boundaries, not a runtime dependency. Do not import its automatic trading loop, exchange abstraction, model-payment wallet, or generic REST agent.
 
 Add markets and account modes only when needed; introduce WebSocket for demonstrated real-time requirements. User-confirmed trading needs a separate execution module with explicit action, account, quantity, limit price, reduce-only flag, expiry, and confirmation record using Hyperliquid's signing protocol. Base swap calldata/approval flows do not apply. Automatic trading later needs independent agent authorization, limits, and pause controls. The model never receives direct funds access. Avoid empty modules for speculative chains, research, background jobs, or model providers.
+
+## Deterministic Trends companion
+
+The workspace Trends panel is separate from chat tool execution. A single-instance in-process collector samples default-perpetual market data every five minutes, reported weekly-PnL leaderboard data hourly, and eligible top-five addresses' raw positions every fifteen minutes. It shares the InfoClient budget with chat, persists bounded state in SQLite, and serves authenticated stored reads through `/v1/trends`. It uses rules and templates, never model calls or chat token quota. This adds scheduled observation only; chat tools retain their existing contracts and coverage. See README's Trends section for thresholds, source failure handling, warm-up, retention, and sampling limitations. No realtime trade/market-wide liquidation feed or full trader-performance assessment is claimed.

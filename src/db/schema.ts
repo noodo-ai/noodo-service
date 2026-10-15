@@ -1,4 +1,10 @@
-import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core'
+import {
+  sqliteTable,
+  text,
+  integer,
+  blob,
+  primaryKey,
+} from 'drizzle-orm/sqlite-core'
 export const users = sqliteTable('users', {
   id: text().primaryKey(),
   username: text().notNull().unique(),
@@ -82,4 +88,58 @@ export const toolCalls = sqliteTable('tool_calls', {
   assistantContent: text().notNull(),
   createdAt: integer().notNull(),
   updatedAt: integer().notNull(),
+})
+export const resourceCategories = sqliteTable('resource_categories', {
+  id: text().primaryKey(),
+  ownerId: text()
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  name: text().notNull(),
+})
+export const resources = sqliteTable('resources', {
+  id: text().primaryKey(),
+  ownerId: text()
+    .notNull()
+    .references(() => users.id),
+  title: text().notNull(),
+  summary: text().notNull(),
+  body: text().notNull(),
+  visibility: text().notNull(),
+  categoryId: text().references(() => resourceCategories.id, {
+    onDelete: 'set null',
+  }),
+  topic: text().notNull(),
+  bytes: integer().notNull(),
+  createdAt: integer().notNull(),
+  updatedAt: integer().notNull(),
+})
+
+export const resourceFiles = sqliteTable('resource_files', {
+  id: text().primaryKey(),
+  resourceId: text()
+    .notNull()
+    .references(() => resources.id, { onDelete: 'cascade' }),
+  name: text().notNull(),
+  format: text().notNull(),
+  mime: text().notNull(),
+  bytes: integer().notNull(),
+  content: blob({ mode: 'buffer' }).notNull(),
+})
+export const resourceViews = sqliteTable(
+  'resource_views',
+  {
+    resourceId: text()
+      .notNull()
+      .references(() => resources.id, { onDelete: 'cascade' }),
+    viewerId: text()
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    viewedAt: integer().notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.resourceId, table.viewerId] })],
+)
+
+export const trendsState = sqliteTable('trends_state', {
+  id: integer('id').primaryKey(),
+  payload: text('payload').notNull(),
 })

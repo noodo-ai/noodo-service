@@ -65,7 +65,7 @@ Risk calculations use decimal arithmetic, source IDs, and formula versions. They
 
 ## API and recovery
 
-Browser authentication uses an HttpOnly cookie. Every conversation and run is owner-scoped; another user's resource returns 404. Request schemas and public errors live in `src/contracts.ts`.
+Browser authentication uses an HttpOnly cookie. Every conversation and run is owner-scoped; another user's conversation or run returns 404. Request schemas and public errors live in `src/contracts.ts`.
 
 Owner-scoped `DELETE /v1/conversations/:id` returns `{deleted:true}`. Active runs return 409. Deletion atomically clears messages, tool snapshots, saved results, errors, and addresses and hides the conversation and its runs (404). Redacted run accounting remains until normal retention expires so deletion cannot reset daily quotas. Existing encrypted backups retain their usual seven-day lifetime.
 
@@ -74,6 +74,30 @@ A new `POST /v1/conversations/:id/messages` returns SSE and `X-Run-Id`. The same
 The frontend saves the original request before POST and handles SSE or JSON according to Content-Type. A disconnect retrieves `GET /v1/runs/:id`; uncertain submissions retain the original ID. Only explicit retries use new IDs. Requests older than thirty days are not replayed. Saved run results are authoritative for text and cards. There is no event replay or background continuation.
 
 Tools save snapshots before emitting completion events. Text checkpoints run every second or every 1,000 characters. Terminal state, assistant message, and token settlement commit together; late callbacks cannot overwrite them. Cancellation, network loss, and restart preserve partial or unavailable results. Model calls and runs have no elapsed-time cutoff; caller cancellation and Hyperliquid query timeouts remain active. Limits are three tool rounds, six tool executions, four primary model calls plus at most two tool-free compression calls, 2,000 output tokens per call, 24,000 cumulative input tokens, and 8,000 cumulative output tokens. Input is counted before generation. Answer drafts are buffered until validated; final answers target 900 Unicode characters and must fit within 1,200, including whitespace and Markdown. Oversized or token-truncated drafts are rewritten using existing evidence before publication.
+
+## Resources API and storage
+
+Resource metadata, attachments (SQLite BLOBs), personal categories, and view accounting live in the existing database and its encrypted backups. Migration 0004 is applied on startup. Resource data does not expire with the thirty-day chat retention window. Use persistent storage; this remains a single-instance design without object storage or document conversion services.
+
+- `GET /v1/resources`: `scope=community|personal`, `search` (title/summary), `topic`, `format`, `visibility`, personal `categoryId`, `sort=latest|popular`, `limit` (1–30), `offset`. Returns metadata/files and `nextOffset`; report bodies and attachment bytes are excluded.
+- `POST /v1/resources`: title, summary, Markdown body, `visibility` (default private), nullable categoryId, topic, and up to five `{name,base64}` files. `PATCH /v1/resources/:id` replaces editable metadata/body; existing attachments stay attached. `DELETE` removes the resource, its files, and view records.
+- `GET /v1/resources/:id` and `/v1/resources/:id/files/:fileId` check current visibility. File downloads use attachment disposition; `?preview=1` uses the validated MIME type. Responses use no-store caching and file responses disable sniffing.
+- `POST /v1/resources/:id/view` records a signed-in non-owner reader for public resources. Popular ranks unique readers in the past seven days. Views are independent of reading and do not affect AI quotas.
+- `GET|POST /v1/resource-categories` and `PATCH|DELETE /v1/resource-categories/:id` manage owner-only categories. GET also returns `usedBytes` and `limitBytes`. Deleting a category preserves uncategorized resources.
+
+Public resources are readable by any signed-in user; another user's private resource or attempted mutation returns 404. Categories are always owner-scoped and their IDs are hidden from other readers. Writes retain the Origin check and use a per-user rate limit. Supported topics are Research, Markets, Trading, Data, Other. Allowed file extensions are md, txt, csv, json, pdf, png, jpg/jpeg, webp; text requires UTF-8, JSON must parse, and binary files require matching signatures. HTML, SVG, office files and executable content are excluded. No OCR or AI indexing is performed.
+
+Quota checks and resource/file writes run in one SQLite transaction: 10 MiB of body plus attachments per resource, 100 MiB and 1,000 resources per owner, 50 categories per owner. Resource creation has a 15 MiB JSON transport limit for base64 overhead; metadata edits have a 2 MiB transport limit to accommodate the full 200,000-character body, including JSON Unicode escapes. Files are stored once; backups continue to retain deleted data for their usual seven-day lifetime. Resource attachments are included in database backups, so monitor disk and backup size as user count grows.
+
+## Trends API and scheduled observations
+
+`GET /v1/trends` requires a session and returns stored highlights, top-five traders, at most 100 recent events, scope, source IDs, last-success timestamps, and independent source failure/staleness flags. `marketSource` identifies the latest market snapshot by `sourceId` and `at`; `interestBaseline` identifies the snapshot used for hourly OI comparisons. Each is null when unavailable, and these references are returned even when no signal fires. Reads never initiate upstream work. No AI calls or user model quota are involved. Migration 0005 stores bounded snapshots and events in SQLite, covered by normal encrypted backups.
+
+The single-instance service starts its collector on listen and aborts/awaits it on shutdown. Markets are collected every five minutes with the same InfoClient cache/weighted limiter as chat. The public `https://stats-data.hyperliquid.xyz/Mainnet/leaderboard` is read hourly with an eight-second timeout; this is an undocumented, independently failing contract, validated on every fetch. Eligible user/subaccount addresses in its five highest reported weekly PnL entries are sampled every fifteen minutes. Agent/vault/missing roles are skipped. Balances and derived account risk are not used. Failed source updates preserve prior data and retry no more often than the five-minute collection interval (market failures can retry on the scheduler's next minute).
+
+Rules: absolute underlying OI change of at least 10% against a 55–65-minute-old snapshot; hourly funding crossing between nonzero signs with at most a ten-minute gap; rank changes within the previously stored top five; and signed position changes of at least $1 million estimated with a market snapshot at most ten minutes old. Position baselines older than twenty minutes are ignored. Snapshot changes do not prove individual trades, all-market activity, or trading intent. USD deltas use current marks; OI changes use underlying units. Ranking uses source-reported seven-day PnL and does not assess risk-adjusted skill. The stats endpoint is not filtered by DEX; its performance may cover other markets. Only position tracking and market cards are limited to default perpetuals. Volume cards show reported rolling 24-hour volume, not invented volume spikes.
+
+The collector stores up to sixteen market snapshots over seventy minutes, one snapshot per tracked address, and up to 100 events over seven days. Duplicate rule/coin signals are suppressed for one hour. The hourly comparison warms up after startup when no persisted baseline exists. This feature covers default perpetuals only; it does not add spot, HIP-3, global liquidations, realtime large-trade streams, or guaranteed history. Collection runs only while the API process is online. Market data becomes stale after ten minutes, leaderboard after two hours, and position sampling after thirty minutes; failed refreshes are reported immediately.
 
 ## Validation
 
@@ -109,7 +133,7 @@ npm run db:verify -- backups/<backup-file>.enc
 npm run db:prune
 ```
 
-No scheduler is created by this repository. Backups use SQLite's online backup API and AES-256-GCM, with file mode 0600 and default directory mode 0700. Backup commands remove matching default-named backups older than seven days. Do not copy an active SQLite file without its WAL.
+No backup scheduler is created by this repository. Backups use SQLite's online backup API and AES-256-GCM, with file mode 0600 and default directory mode 0700. Backup commands remove matching default-named backups older than seven days. Do not copy an active SQLite file without its WAL.
 
 Verification decrypts into an independent temporary database, checks integrity and foreign keys, recovers running requests, validates settlement and sources, then removes the plaintext. It never overwrites the live database. Chat runs, linked messages, and snapshots expire after thirty days; running requests and the current quota day are retained. Backups can retain expired data for up to seven additional days; disclose that during the trial.
 

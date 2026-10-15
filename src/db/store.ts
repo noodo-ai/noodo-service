@@ -71,6 +71,28 @@ export class Store {
           ),
         ),
       )()
+    if (
+      !this.sql.prepare('SELECT 1 FROM schema_migrations WHERE version=4').get()
+    )
+      this.sql.transaction(() =>
+        this.sql.exec(
+          readFileSync(
+            new URL('../../migrations/0004_resources.sql', import.meta.url),
+            'utf8',
+          ),
+        ),
+      )()
+    if (
+      !this.sql.prepare('SELECT 1 FROM schema_migrations WHERE version=5').get()
+    )
+      this.sql.transaction(() =>
+        this.sql.exec(
+          readFileSync(
+            new URL('../../migrations/0005_trends.sql', import.meta.url),
+            'utf8',
+          ),
+        ),
+      )()
     this.db = drizzle(this.sql, { schema })
   }
   user(username: string) {
